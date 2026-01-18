@@ -1,0 +1,25 @@
+[package]
+name = "better-notes"
+version.workspace = true
+license.workspace = true
+edition = "2021"
+
+[[bin]]
+name = "better-notes"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+chrono.workspace = true
+clap.workspace = true
+regex.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+url.workspace = true
+walkdir.workspace = true
+
+[dev-dependencies]
