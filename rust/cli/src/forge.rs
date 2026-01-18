@@ -110,11 +110,7 @@ impl Forge {
                 format!("https://github.com/{owner}/{repo}/commit/{hash}")
             }
             Forge::Gitea { host, owner, repo } => {
-                let scheme = if host.ends_with(".lan") {
-                    "http"
-                } else {
-                    "https"
-                };
+                let scheme = "https";
                 format!("{scheme}://{host}/{owner}/{repo}/commit/{hash}")
             }
             Forge::GitLab { host, owner, repo } => {
@@ -131,11 +127,7 @@ impl Forge {
                 format!("https://github.com/{owner}/{repo}/pull/{number}")
             }
             Forge::Gitea { host, owner, repo } => {
-                let scheme = if host.ends_with(".lan") {
-                    "http"
-                } else {
-                    "https"
-                };
+                let scheme = "https";
                 format!("{scheme}://{host}/{owner}/{repo}/pulls/{number}")
             }
             Forge::GitLab { host, owner, repo } => {
@@ -150,11 +142,7 @@ impl Forge {
         match self {
             Forge::GitHub { .. } => "https://api.github.com".to_string(),
             Forge::Gitea { host, .. } => {
-                let scheme = if host.ends_with(".lan") {
-                    "http"
-                } else {
-                    "https"
-                };
+                let scheme = "https";
                 format!("{scheme}://{host}/api/v1")
             }
             Forge::GitLab { host, .. } => {

@@ -207,10 +207,17 @@ pub fn get_commits(
             Some(body.to_string())
         };
 
+        let subject = parts[2].trim();
+
+        // Skip commits without descriptions (jj intermediate snapshots)
+        if subject.is_empty() {
+            continue;
+        }
+
         commits.push(Commit {
             hash: parts[0].to_string(),
             short_hash: parts[1].to_string(),
-            subject: parts[2].to_string(),
+            subject: subject.to_string(),
             body,
             author: parts[4].to_string(),
             date,

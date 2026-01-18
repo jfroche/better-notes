@@ -19,7 +19,7 @@ pub fn format_without_summary(groups: &[(Forge, Vec<Commit>, Vec<PullRequest>)])
 
         // List commits
         for commit in commits {
-            let url = forge.commit_url(&commit.short_hash);
+            let url = forge.commit_url(&commit.hash);
             output.push_str(&format!(
                 "- [{}]({}) - {}\n",
                 commit.short_hash, url, commit.subject
@@ -77,7 +77,7 @@ pub async fn format_with_summary(
 
         // List commits
         for commit in commits {
-            let url = forge.commit_url(&commit.short_hash);
+            let url = forge.commit_url(&commit.hash);
             output.push_str(&format!(
                 "- [{}]({}) - {}\n",
                 commit.short_hash, url, commit.subject

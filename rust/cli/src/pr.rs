@@ -170,11 +170,7 @@ async fn fetch_gitea_prs(host: &str, owner: &str, repo: &str) -> Result<Vec<Pull
         mergeable: Option<bool>,
     }
 
-    let scheme = if host.ends_with(".lan") {
-        "http"
-    } else {
-        "https"
-    };
+    let scheme = "https";
     let url = format!("{scheme}://{host}/api/v1/repos/{owner}/{repo}/pulls?state=all&limit=20");
 
     let client = reqwest::Client::new();
@@ -222,11 +218,7 @@ async fn fetch_gitea_ci_status(host: &str, owner: &str, repo: &str, pr_number: u
         state: String,
     }
 
-    let scheme = if host.ends_with(".lan") {
-        "http"
-    } else {
-        "https"
-    };
+    let scheme = "https";
 
     // First get the PR to find the head commit
     let pr_url = format!("{scheme}://{host}/api/v1/repos/{owner}/{repo}/pulls/{pr_number}");
