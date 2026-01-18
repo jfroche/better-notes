@@ -17,10 +17,18 @@
 
   outputs =
     inputs:
-    inputs.blueprint {
-      inherit inputs;
-      prefix = "nix/";
+    let
+      blueprint = inputs.blueprint {
+        inherit inputs;
+        prefix = "nix/";
 
-      nixpkgs.config.allowUnfree = false;
+        nixpkgs.config.allowUnfree = false;
+      };
+    in
+    blueprint
+    // {
+      packages = builtins.mapAttrs (
+        _system: pkgs: pkgs // { default = pkgs.better-notes; }
+      ) blueprint.packages;
     };
 }
