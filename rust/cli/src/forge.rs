@@ -124,6 +124,7 @@ impl Forge {
     }
 
     /// Generate URL for a pull request / merge request
+    #[allow(dead_code)]
     pub fn pr_url(&self, number: u32) -> String {
         match self {
             Forge::GitHub { owner, repo } => {
@@ -144,6 +145,7 @@ impl Forge {
     }
 
     /// Get the base API URL for this forge
+    #[allow(dead_code)]
     pub fn api_base_url(&self) -> String {
         match self {
             Forge::GitHub { .. } => "https://api.github.com".to_string(),

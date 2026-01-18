@@ -47,6 +47,7 @@ impl Summarizer {
     }
 
     /// Check if the summarizer is available (API key is set)
+    #[allow(dead_code)]
     pub fn is_available() -> bool {
         std::env::var("ANTHROPIC_API_KEY").is_ok()
     }

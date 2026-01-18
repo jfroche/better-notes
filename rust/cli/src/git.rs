@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{anyhow, Context, Result};
-use chrono::{DateTime, Duration, Local, NaiveDate, Utc};
+use chrono::{DateTime, Duration, NaiveDate, Utc};
 use walkdir::WalkDir;
 
 use crate::forge::Forge;
@@ -15,6 +15,7 @@ pub struct Commit {
     pub short_hash: String,
     pub subject: String,
     pub body: Option<String>,
+    #[allow(dead_code)]
     pub author: String,
     pub date: DateTime<Utc>,
 }
@@ -80,7 +81,14 @@ pub fn discover_repositories(root: &Path) -> Result<Vec<Repository>> {
         .into_iter()
         .filter_entry(|e| !is_hidden(e))
     {
-        let entry = entry?;
+        // Skip entries we can't read (permission denied, etc.)
+        let entry = match entry {
+            Ok(e) => e,
+            Err(e) => {
+                tracing::debug!("Skipping inaccessible path: {}", e);
+                continue;
+            }
+        };
         let path = entry.path();
 
         // Check for .git directory or file (worktree)

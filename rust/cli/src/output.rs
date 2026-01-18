@@ -119,7 +119,6 @@ fn format_pr(pr: &PullRequest) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::Utc;
 
     #[test]
     fn test_format_pr_merged() {

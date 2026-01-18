@@ -27,6 +27,7 @@ pub enum CiStatus {
 #[derive(Debug, Clone)]
 pub struct PullRequest {
     pub number: u32,
+    #[allow(dead_code)]
     pub title: String,
     pub status: PrStatus,
     pub ci_status: CiStatus,
@@ -56,7 +57,7 @@ impl std::fmt::Display for CiStatus {
 }
 
 /// Fetch PRs associated with the given commits
-pub async fn fetch_prs_for_commits(forge: &Forge, commits: &[Commit]) -> Result<Vec<PullRequest>> {
+pub async fn fetch_prs_for_commits(forge: &Forge, _commits: &[Commit]) -> Result<Vec<PullRequest>> {
     // Get branches that contain the commits
     // For now, we'll fetch all open PRs for the repo and match by branch
     match forge {
