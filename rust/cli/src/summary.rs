@@ -66,12 +66,12 @@ impl Summarizer {
             .join("\n");
 
         let prompt = format!(
-            r#"Summarize these git commits in 1-2 sentences, focusing on what was accomplished and the value delivered. Be concise and use past tense.
+            r#"Summarize these git commits in 1-2 sentences, focusing on what was accomplished and the value delivered. Be concise and use past tense. Write in first person (e.g., "I implemented...", "I fixed...").
 
 Commits:
 {commit_list}
 
-Write a summary suitable for daily standup notes and timesheet entries to report work to clients. Focus on the "what" and "why" rather than technical implementation details. Do not use bullet points, just a short paragraph."#
+Write a summary suitable for daily standup notes and timesheet entries to report work to clients. Focus on the "what" and "why" rather than technical implementation details. Do not use bullet points, just a short paragraph in first person."#
         );
 
         let request = AnthropicRequest {
