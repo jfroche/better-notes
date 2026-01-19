@@ -51,12 +51,13 @@ pub enum CiStatus {
 #[derive(Debug, Clone)]
 pub struct PullRequest {
     pub number: u32,
-    #[allow(dead_code)]
     pub title: String,
     pub status: PrStatus,
     pub ci_status: CiStatus,
     pub has_conflicts: bool,
     pub url: String,
+    /// Commit hashes associated with this PR
+    pub commit_hashes: Vec<String>,
 }
 
 impl std::fmt::Display for PrStatus {
@@ -101,12 +102,18 @@ async fn fetch_github_prs(owner: &str, repo: &str) -> Result<Vec<PullRequest>> {
         merge_state_status: Option<String>,
         #[serde(rename = "statusCheckRollup")]
         status_check_rollup: Option<Vec<GhCheck>>,
+        commits: Option<Vec<GhCommit>>,
     }
 
     #[derive(Deserialize)]
     struct GhCheck {
         conclusion: Option<String>,
         status: Option<String>,
+    }
+
+    #[derive(Deserialize)]
+    struct GhCommit {
+        oid: String,
     }
 
     let output = Command::new("gh")
@@ -122,7 +129,7 @@ async fn fetch_github_prs(owner: &str, repo: &str) -> Result<Vec<PullRequest>> {
             "--limit",
             "20",
             "--json",
-            "number,title,state,mergeStateStatus,statusCheckRollup",
+            "number,title,state,mergeStateStatus,statusCheckRollup,commits",
         ])
         .output()
         .context("Failed to run gh pr list")?;
@@ -173,6 +180,11 @@ async fn fetch_github_prs(owner: &str, repo: &str) -> Result<Vec<PullRequest>> {
 
             let has_conflicts = pr.merge_state_status.as_deref() == Some("CONFLICTING");
 
+            let commit_hashes = pr
+                .commits
+                .map(|commits| commits.into_iter().map(|c| c.oid).collect())
+                .unwrap_or_default();
+
             PullRequest {
                 number: pr.number,
                 title: pr.title,
@@ -180,6 +192,7 @@ async fn fetch_github_prs(owner: &str, repo: &str) -> Result<Vec<PullRequest>> {
                 ci_status,
                 has_conflicts,
                 url: format!("https://github.com/{owner}/{repo}/pull/{}", pr.number),
+                commit_hashes,
             }
         })
         .collect())
@@ -234,6 +247,9 @@ async fn fetch_gitea_prs(host: &str, owner: &str, repo: &str) -> Result<Vec<Pull
             CiStatus::Unknown
         };
 
+        // Fetch commits for this PR
+        let commit_hashes = fetch_gitea_pr_commits(host, owner, repo, pr.number).await;
+
         result.push(PullRequest {
             number: pr.number,
             title: pr.title,
@@ -241,10 +257,42 @@ async fn fetch_gitea_prs(host: &str, owner: &str, repo: &str) -> Result<Vec<Pull
             ci_status,
             has_conflicts: pr.mergeable == Some(false),
             url: format!("{scheme}://{host}/{owner}/{repo}/pulls/{}", pr.number),
+            commit_hashes,
         });
     }
 
     Ok(result)
+}
+
+async fn fetch_gitea_pr_commits(
+    host: &str,
+    owner: &str,
+    repo: &str,
+    pr_number: u32,
+) -> Vec<String> {
+    #[derive(Deserialize)]
+    struct GiteaCommit {
+        sha: String,
+    }
+
+    let scheme = "https";
+    let url = format!("{scheme}://{host}/api/v1/repos/{owner}/{repo}/pulls/{pr_number}/commits");
+
+    let client = reqwest::Client::new();
+    let mut request = client.get(&url);
+
+    if let Some(token) = get_gitea_token(host) {
+        request = request.header("Authorization", format!("token {token}"));
+    }
+
+    match request.send().await {
+        Ok(resp) if resp.status().is_success() => resp
+            .json::<Vec<GiteaCommit>>()
+            .await
+            .map(|commits| commits.into_iter().map(|c| c.sha).collect())
+            .unwrap_or_default(),
+        _ => Vec::new(),
+    }
 }
 
 async fn fetch_gitea_ci_status(host: &str, owner: &str, repo: &str, pr_number: u32) -> CiStatus {
@@ -335,6 +383,7 @@ async fn fetch_gitlab_prs(host: &str, owner: &str, repo: &str) -> Result<Vec<Pul
                 has_conflicts: Option<bool>,
                 #[serde(rename = "detailed_merge_status")]
                 detailed_merge_status: Option<String>,
+                sha: Option<String>,
             }
 
             let mrs: Vec<GlabMr> = serde_json::from_slice(&o.stdout).unwrap_or_default();
@@ -356,6 +405,10 @@ async fn fetch_gitlab_prs(host: &str, owner: &str, repo: &str) -> Result<Vec<Pul
                         _ => CiStatus::Unknown,
                     };
 
+                    // GitLab only provides the head commit SHA in glab output
+                    // Full commit list would require API calls
+                    let commit_hashes = mr.sha.into_iter().collect();
+
                     PullRequest {
                         number: mr.iid,
                         title: mr.title,
@@ -363,6 +416,7 @@ async fn fetch_gitlab_prs(host: &str, owner: &str, repo: &str) -> Result<Vec<Pul
                         ci_status,
                         has_conflicts: mr.has_conflicts.unwrap_or(false),
                         url: format!("https://{host}/{owner}/{repo}/-/merge_requests/{}", mr.iid),
+                        commit_hashes,
                     }
                 })
                 .collect())
