@@ -1,9 +1,18 @@
+use std::collections::HashSet;
+
 use anyhow::Result;
 
 use crate::forge::Forge;
 use crate::git::Commit;
 use crate::pr::{CiStatus, PrStatus, PullRequest};
 use crate::summary::Summarizer;
+
+/// Collect all commit hashes associated with PRs
+fn collect_pr_commit_hashes(prs: &[PullRequest]) -> HashSet<&str> {
+    prs.iter()
+        .flat_map(|pr| pr.commit_hashes.iter().map(|h| h.as_str()))
+        .collect()
+}
 
 /// Format output without LLM summaries
 pub fn format_without_summary(groups: &[(Forge, Vec<Commit>, Vec<PullRequest>)]) -> String {
@@ -17,8 +26,14 @@ pub fn format_without_summary(groups: &[(Forge, Vec<Commit>, Vec<PullRequest>)])
 
         output.push_str(&format!("### {}\n\n", forge.display_name()));
 
-        // List commits
+        // Collect commits that are part of PRs to filter them out
+        let pr_commits = collect_pr_commit_hashes(prs);
+
+        // List commits not associated with PRs
         for commit in commits {
+            if pr_commits.contains(commit.hash.as_str()) {
+                continue;
+            }
             let url = forge.commit_url(&commit.hash);
             output.push_str(&format!(
                 "- [{}]({}) - {}\n",
@@ -59,7 +74,10 @@ pub async fn format_with_summary(
 
         output.push_str(&format!("### {}\n\n", forge.display_name()));
 
-        // Generate summary if available
+        // Collect commits that are part of PRs to filter them out from listing
+        let pr_commits = collect_pr_commit_hashes(prs);
+
+        // Generate summary from all commits (including those in PRs)
         if let Some(ref summarizer) = summarizer {
             if !commits.is_empty() {
                 match summarizer.summarize(commits).await {
@@ -75,8 +93,11 @@ pub async fn format_with_summary(
             }
         }
 
-        // List commits
+        // List commits not associated with PRs
         for commit in commits {
+            if pr_commits.contains(commit.hash.as_str()) {
+                continue;
+            }
             let url = forge.commit_url(&commit.hash);
             output.push_str(&format!(
                 "- [{}]({}) - {}\n",
@@ -113,7 +134,10 @@ fn format_pr(pr: &PullRequest) -> String {
 
     let status_str = status_parts.join(", ");
 
-    format!("- PR [#{}]({}) - {}\n", pr.number, pr.url, status_str)
+    format!(
+        "- PR [#{}]({}) {} - {}\n",
+        pr.number, pr.url, pr.title, status_str
+    )
 }
 
 #[cfg(test)]
@@ -129,6 +153,7 @@ mod tests {
             ci_status: CiStatus::Success,
             has_conflicts: false,
             url: "https://github.com/org/repo/pull/42".to_string(),
+            commit_hashes: vec!["abc123".to_string()],
         };
 
         let output = format_pr(&pr);
@@ -145,6 +170,7 @@ mod tests {
             ci_status: CiStatus::Pending,
             has_conflicts: true,
             url: "https://github.com/org/repo/pull/23".to_string(),
+            commit_hashes: vec![],
         };
 
         let output = format_pr(&pr);
