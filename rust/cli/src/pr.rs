@@ -6,6 +6,28 @@ use serde::Deserialize;
 use crate::forge::Forge;
 use crate::git::Commit;
 
+/// Read GitHub token from gh CLI config or environment
+fn get_github_token() -> Option<String> {
+    // First check environment variable
+    if let Ok(token) = std::env::var("GITHUB_TOKEN") {
+        if !token.is_empty() {
+            return Some(token);
+        }
+    }
+
+    // Fall back to gh CLI config
+    #[derive(Deserialize)]
+    struct GhHost {
+        oauth_token: Option<String>,
+    }
+
+    let config_path = dirs::config_dir()?.join("gh/hosts.yml");
+    let content = std::fs::read_to_string(&config_path).ok()?;
+    let hosts: std::collections::HashMap<String, GhHost> = serde_yaml::from_str(&content).ok()?;
+
+    hosts.get("github.com").and_then(|h| h.oauth_token.clone())
+}
+
 /// Read Gitea token from tea config file
 fn get_gitea_token(host: &str) -> Option<String> {
     #[derive(Deserialize)]
@@ -93,109 +115,220 @@ pub async fn fetch_prs_for_commits(forge: &Forge, _commits: &[Commit]) -> Result
 }
 
 async fn fetch_github_prs(owner: &str, repo: &str) -> Result<Vec<PullRequest>> {
+    let token = get_github_token();
+    if token.is_none() {
+        tracing::warn!("No GitHub token found, skipping GitHub PR fetch");
+        return Ok(Vec::new());
+    }
+    let token = token.unwrap();
+
+    // Get current user login
+    let username = get_github_username(&token).await?;
+
     #[derive(Deserialize)]
     struct GhPr {
         number: u32,
         title: String,
         state: String,
-        #[serde(rename = "mergeStateStatus")]
-        merge_state_status: Option<String>,
-        #[serde(rename = "statusCheckRollup")]
-        status_check_rollup: Option<Vec<GhCheck>>,
-        commits: Option<Vec<GhCommit>>,
+        merged: Option<bool>,
+        mergeable: Option<bool>,
+        html_url: String,
+        head: GhHead,
     }
 
     #[derive(Deserialize)]
-    struct GhCheck {
-        conclusion: Option<String>,
-        status: Option<String>,
+    struct GhHead {
+        sha: String,
     }
 
+    let url = format!(
+        "https://api.github.com/repos/{owner}/{repo}/pulls?state=all&per_page=20&sort=updated&direction=desc"
+    );
+
+    let client = reqwest::Client::new();
+    let response = client
+        .get(&url)
+        .header("Authorization", format!("Bearer {token}"))
+        .header("User-Agent", "better-notes")
+        .header("Accept", "application/vnd.github+json")
+        .send()
+        .await;
+
+    let all_prs: Vec<GhPr> = match response {
+        Ok(resp) if resp.status().is_success() => resp.json().await.unwrap_or_default(),
+        Ok(resp) => {
+            tracing::warn!("GitHub API error: {}", resp.status());
+            return Ok(Vec::new());
+        }
+        Err(e) => {
+            tracing::warn!("GitHub API request failed: {}", e);
+            return Ok(Vec::new());
+        }
+    };
+
+    // Filter to only user's PRs
+    let mut result = Vec::new();
+    for pr in all_prs {
+        // Fetch PR details to check author
+        let pr_author = get_github_pr_author(&token, owner, repo, pr.number).await;
+        if pr_author.as_deref() != Some(username.as_str()) {
+            continue;
+        }
+
+        let status = if pr.merged == Some(true) {
+            PrStatus::Merged
+        } else {
+            match pr.state.as_str() {
+                "closed" => PrStatus::Closed,
+                _ => PrStatus::Open,
+            }
+        };
+
+        // Fetch CI status for open PRs
+        let ci_status = if status == PrStatus::Open {
+            fetch_github_ci_status(&token, owner, repo, &pr.head.sha).await
+        } else {
+            CiStatus::Unknown
+        };
+
+        let has_conflicts = pr.mergeable == Some(false);
+
+        // Fetch commits for this PR
+        let commit_hashes = fetch_github_pr_commits(&token, owner, repo, pr.number).await;
+
+        result.push(PullRequest {
+            number: pr.number,
+            title: pr.title,
+            status,
+            ci_status,
+            has_conflicts,
+            url: pr.html_url,
+            commit_hashes,
+        });
+    }
+
+    Ok(result)
+}
+
+/// Get GitHub username from token
+async fn get_github_username(token: &str) -> Result<String> {
+    #[derive(Deserialize)]
+    struct GhUser {
+        login: String,
+    }
+
+    let client = reqwest::Client::new();
+    let response = client
+        .get("https://api.github.com/user")
+        .header("Authorization", format!("Bearer {token}"))
+        .header("User-Agent", "better-notes")
+        .header("Accept", "application/vnd.github+json")
+        .send()
+        .await
+        .context("Failed to fetch GitHub user")?;
+
+    let user: GhUser = response
+        .json()
+        .await
+        .context("Failed to parse GitHub user")?;
+    Ok(user.login)
+}
+
+/// Get PR author from GitHub API
+async fn get_github_pr_author(
+    token: &str,
+    owner: &str,
+    repo: &str,
+    pr_number: u32,
+) -> Option<String> {
+    #[derive(Deserialize)]
+    struct GhPrDetail {
+        user: GhUser,
+    }
+
+    #[derive(Deserialize)]
+    struct GhUser {
+        login: String,
+    }
+
+    let url = format!("https://api.github.com/repos/{owner}/{repo}/pulls/{pr_number}");
+    let client = reqwest::Client::new();
+    let response = client
+        .get(&url)
+        .header("Authorization", format!("Bearer {token}"))
+        .header("User-Agent", "better-notes")
+        .header("Accept", "application/vnd.github+json")
+        .send()
+        .await
+        .ok()?;
+
+    let pr: GhPrDetail = response.json().await.ok()?;
+    Some(pr.user.login)
+}
+
+/// Fetch CI status for a GitHub commit
+async fn fetch_github_ci_status(token: &str, owner: &str, repo: &str, sha: &str) -> CiStatus {
+    #[derive(Deserialize)]
+    struct CombinedStatus {
+        state: String,
+    }
+
+    let url = format!("https://api.github.com/repos/{owner}/{repo}/commits/{sha}/status");
+    let client = reqwest::Client::new();
+    let response = client
+        .get(&url)
+        .header("Authorization", format!("Bearer {token}"))
+        .header("User-Agent", "better-notes")
+        .header("Accept", "application/vnd.github+json")
+        .send()
+        .await;
+
+    match response {
+        Ok(resp) if resp.status().is_success() => match resp.json::<CombinedStatus>().await {
+            Ok(status) => match status.state.as_str() {
+                "success" => CiStatus::Success,
+                "pending" => CiStatus::Pending,
+                "failure" | "error" => CiStatus::Failure,
+                _ => CiStatus::Unknown,
+            },
+            Err(_) => CiStatus::Unknown,
+        },
+        _ => CiStatus::Unknown,
+    }
+}
+
+/// Fetch commits for a GitHub PR
+async fn fetch_github_pr_commits(
+    token: &str,
+    owner: &str,
+    repo: &str,
+    pr_number: u32,
+) -> Vec<String> {
     #[derive(Deserialize)]
     struct GhCommit {
-        oid: String,
+        sha: String,
     }
 
-    let output = Command::new("gh")
-        .args([
-            "pr",
-            "list",
-            "--repo",
-            &format!("{owner}/{repo}"),
-            "--author",
-            "@me",
-            "--state",
-            "all",
-            "--limit",
-            "20",
-            "--json",
-            "number,title,state,mergeStateStatus,statusCheckRollup,commits",
-        ])
-        .output()
-        .context("Failed to run gh pr list")?;
+    let url = format!(
+        "https://api.github.com/repos/{owner}/{repo}/pulls/{pr_number}/commits?per_page=100"
+    );
+    let client = reqwest::Client::new();
+    let response = client
+        .get(&url)
+        .header("Authorization", format!("Bearer {token}"))
+        .header("User-Agent", "better-notes")
+        .header("Accept", "application/vnd.github+json")
+        .send()
+        .await;
 
-    if !output.status.success() {
-        tracing::warn!(
-            "gh pr list failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        return Ok(Vec::new());
+    match response {
+        Ok(resp) if resp.status().is_success() => resp
+            .json::<Vec<GhCommit>>()
+            .await
+            .map(|commits| commits.into_iter().map(|c| c.sha).collect())
+            .unwrap_or_default(),
+        _ => Vec::new(),
     }
-
-    let prs: Vec<GhPr> = serde_json::from_slice(&output.stdout).unwrap_or_default();
-
-    Ok(prs
-        .into_iter()
-        .map(|pr| {
-            let status = match pr.state.as_str() {
-                "MERGED" => PrStatus::Merged,
-                "CLOSED" => PrStatus::Closed,
-                _ => PrStatus::Open,
-            };
-
-            let ci_status = pr
-                .status_check_rollup
-                .as_ref()
-                .and_then(|checks| {
-                    if checks
-                        .iter()
-                        .any(|c| c.conclusion.as_deref() == Some("FAILURE"))
-                    {
-                        Some(CiStatus::Failure)
-                    } else if checks
-                        .iter()
-                        .all(|c| c.conclusion.as_deref() == Some("SUCCESS"))
-                    {
-                        Some(CiStatus::Success)
-                    } else if checks
-                        .iter()
-                        .any(|c| c.status.as_deref() == Some("IN_PROGRESS"))
-                    {
-                        Some(CiStatus::Pending)
-                    } else {
-                        None
-                    }
-                })
-                .unwrap_or(CiStatus::Unknown);
-
-            let has_conflicts = pr.merge_state_status.as_deref() == Some("CONFLICTING");
-
-            let commit_hashes = pr
-                .commits
-                .map(|commits| commits.into_iter().map(|c| c.oid).collect())
-                .unwrap_or_default();
-
-            PullRequest {
-                number: pr.number,
-                title: pr.title,
-                status,
-                ci_status,
-                has_conflicts,
-                url: format!("https://github.com/{owner}/{repo}/pull/{}", pr.number),
-                commit_hashes,
-            }
-        })
-        .collect())
 }
 
 async fn fetch_gitea_prs(host: &str, owner: &str, repo: &str) -> Result<Vec<PullRequest>> {
