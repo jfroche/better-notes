@@ -160,10 +160,13 @@ pub fn get_commits(
 
     // Use record separator (%x00) between commits and field separator (%x1f) between fields
     // Format: hash<US>short_hash<US>subject<US>body<US>author<US>date<RS>
+    // Use HEAD and --remotes to include local HEAD commits plus all remote branches
+    // This excludes jj's internal refs and orphan commits while keeping unpushed work
     let output = Command::new("git")
         .args([
             "log",
-            "--all",
+            "HEAD",
+            "--remotes",
             "--no-merges",
             &format!("--author={author}"),
             &format!("--since={since_str}"),
