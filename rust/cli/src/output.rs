@@ -1,6 +1,7 @@
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 
 use anyhow::Result;
+use chrono::{DateTime, NaiveDate, Utc};
 
 use crate::forge::Forge;
 use crate::git::Commit;
@@ -12,6 +13,53 @@ fn collect_pr_commit_hashes(prs: &[PullRequest]) -> HashSet<&str> {
     prs.iter()
         .flat_map(|pr| pr.commit_hashes.iter().map(|h| h.as_str()))
         .collect()
+}
+
+/// Item that can be displayed (either a commit or a PR)
+enum DisplayItem<'a> {
+    Commit(&'a Commit),
+    Pr(&'a PullRequest),
+}
+
+impl<'a> DisplayItem<'a> {
+    fn date(&self) -> Option<DateTime<Utc>> {
+        match self {
+            DisplayItem::Commit(c) => Some(c.date),
+            DisplayItem::Pr(pr) => pr.updated_at,
+        }
+    }
+}
+
+/// Group items by date
+fn group_by_date<'a>(
+    commits: &'a [Commit],
+    prs: &'a [PullRequest],
+    pr_commits: &HashSet<&str>,
+) -> BTreeMap<NaiveDate, Vec<DisplayItem<'a>>> {
+    let mut by_date: BTreeMap<NaiveDate, Vec<DisplayItem<'a>>> = BTreeMap::new();
+
+    // Add commits not associated with PRs
+    for commit in commits {
+        if pr_commits.contains(commit.hash.as_str()) {
+            continue;
+        }
+        let date = commit.date.date_naive();
+        by_date
+            .entry(date)
+            .or_default()
+            .push(DisplayItem::Commit(commit));
+    }
+
+    // Add PRs
+    for pr in prs {
+        let date = pr
+            .updated_at
+            .map(|d| d.date_naive())
+            .unwrap_or_else(|| Utc::now().date_naive());
+        by_date.entry(date).or_default().push(DisplayItem::Pr(pr));
+    }
+
+    by_date
 }
 
 /// Format output without LLM summaries
@@ -29,24 +77,28 @@ pub fn format_without_summary(groups: &[(Forge, Vec<Commit>, Vec<PullRequest>)])
         // Collect commits that are part of PRs to filter them out
         let pr_commits = collect_pr_commit_hashes(prs);
 
-        // List commits not associated with PRs
-        for commit in commits {
-            if pr_commits.contains(commit.hash.as_str()) {
-                continue;
+        // Group by date (reverse order - most recent first)
+        let by_date = group_by_date(commits, prs, &pr_commits);
+        for (date, items) in by_date.into_iter().rev() {
+            output.push_str(&format!("#### {}\n\n", date.format("%Y-%m-%d (%A)")));
+
+            for item in items {
+                match item {
+                    DisplayItem::Commit(commit) => {
+                        let url = forge.commit_url(&commit.hash);
+                        output.push_str(&format!(
+                            "- [{}]({}) - {}\n",
+                            commit.short_hash, url, commit.subject
+                        ));
+                    }
+                    DisplayItem::Pr(pr) => {
+                        output.push_str(&format_pr(pr));
+                    }
+                }
             }
-            let url = forge.commit_url(&commit.hash);
-            output.push_str(&format!(
-                "- [{}]({}) - {}\n",
-                commit.short_hash, url, commit.subject
-            ));
-        }
 
-        // List PRs
-        for pr in prs {
-            output.push_str(&format_pr(pr));
+            output.push('\n');
         }
-
-        output.push('\n');
     }
 
     output.trim_end().to_string()
@@ -93,24 +145,28 @@ pub async fn format_with_summary(
             }
         }
 
-        // List commits not associated with PRs
-        for commit in commits {
-            if pr_commits.contains(commit.hash.as_str()) {
-                continue;
+        // Group by date (reverse order - most recent first)
+        let by_date = group_by_date(commits, prs, &pr_commits);
+        for (date, items) in by_date.into_iter().rev() {
+            output.push_str(&format!("#### {}\n\n", date.format("%Y-%m-%d (%A)")));
+
+            for item in items {
+                match item {
+                    DisplayItem::Commit(commit) => {
+                        let url = forge.commit_url(&commit.hash);
+                        output.push_str(&format!(
+                            "- [{}]({}) - {}\n",
+                            commit.short_hash, url, commit.subject
+                        ));
+                    }
+                    DisplayItem::Pr(pr) => {
+                        output.push_str(&format_pr(pr));
+                    }
+                }
             }
-            let url = forge.commit_url(&commit.hash);
-            output.push_str(&format!(
-                "- [{}]({}) - {}\n",
-                commit.short_hash, url, commit.subject
-            ));
-        }
 
-        // List PRs
-        for pr in prs {
-            output.push_str(&format_pr(pr));
+            output.push('\n');
         }
-
-        output.push('\n');
     }
 
     Ok(output.trim_end().to_string())
