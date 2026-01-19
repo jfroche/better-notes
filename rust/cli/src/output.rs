@@ -77,10 +77,10 @@ pub async fn format_with_summary(
         // Collect commits that are part of PRs to filter them out from listing
         let pr_commits = collect_pr_commit_hashes(prs);
 
-        // Generate summary from all commits (including those in PRs)
+        // Generate summary from all commits and PRs
         if let Some(ref summarizer) = summarizer {
-            if !commits.is_empty() {
-                match summarizer.summarize(commits).await {
+            if !commits.is_empty() || !prs.is_empty() {
+                match summarizer.summarize(commits, prs).await {
                     Ok(summary) if !summary.is_empty() => {
                         output.push_str(&summary);
                         output.push_str("\n\n");
@@ -149,11 +149,13 @@ mod tests {
         let pr = PullRequest {
             number: 42,
             title: "Test PR".to_string(),
+            description: Some("Test description".to_string()),
             status: PrStatus::Merged,
             ci_status: CiStatus::Success,
             has_conflicts: false,
             url: "https://github.com/org/repo/pull/42".to_string(),
             commit_hashes: vec!["abc123".to_string()],
+            updated_at: None,
         };
 
         let output = format_pr(&pr);
@@ -166,11 +168,13 @@ mod tests {
         let pr = PullRequest {
             number: 23,
             title: "WIP".to_string(),
+            description: None,
             status: PrStatus::Open,
             ci_status: CiStatus::Pending,
             has_conflicts: true,
             url: "https://github.com/org/repo/pull/23".to_string(),
             commit_hashes: vec![],
+            updated_at: None,
         };
 
         let output = format_pr(&pr);

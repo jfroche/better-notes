@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::git::Commit;
+use crate::pr::PullRequest;
 
 /// LLM-based summarizer using Claude API
 pub struct Summarizer {
@@ -52,9 +53,9 @@ impl Summarizer {
         std::env::var("ANTHROPIC_API_KEY").is_ok()
     }
 
-    /// Generate a narrative summary from commit messages
-    pub async fn summarize(&self, commits: &[Commit]) -> Result<String> {
-        if commits.is_empty() {
+    /// Generate a narrative summary from commit messages and PR descriptions
+    pub async fn summarize(&self, commits: &[Commit], prs: &[PullRequest]) -> Result<String> {
+        if commits.is_empty() && prs.is_empty() {
             return Ok(String::new());
         }
 
@@ -65,11 +66,38 @@ impl Summarizer {
             .collect::<Vec<_>>()
             .join("\n");
 
-        let prompt = format!(
-            r#"Summarize these git commits in 1-2 sentences, focusing on what was accomplished and the value delivered. Be concise and use past tense. Write in first person (e.g., "I implemented...", "I fixed...").
+        // Include PR titles and descriptions
+        let pr_list: String = prs
+            .iter()
+            .map(|pr| {
+                let desc = pr
+                    .description
+                    .as_ref()
+                    .filter(|d| !d.is_empty())
+                    .map(|d| format!("\n  {}", d.lines().take(5).collect::<Vec<_>>().join("\n  ")))
+                    .unwrap_or_default();
+                format!("- PR #{}: {}{}", pr.number, pr.title, desc)
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
 
-Commits:
-{commit_list}
+        let mut context = String::new();
+        if !commits.is_empty() {
+            context.push_str("Commits:\n");
+            context.push_str(&commit_list);
+        }
+        if !prs.is_empty() {
+            if !context.is_empty() {
+                context.push_str("\n\n");
+            }
+            context.push_str("Pull Requests:\n");
+            context.push_str(&pr_list);
+        }
+
+        let prompt = format!(
+            r#"Summarize this git activity in 1-2 sentences, focusing on what was accomplished and the value delivered. Be concise and use past tense. Write in first person (e.g., "I implemented...", "I fixed...").
+
+{context}
 
 Write a summary suitable for daily standup notes and timesheet entries to report work to clients. Focus on the "what" and "why" rather than technical implementation details. Do not use bullet points, just a short paragraph in first person."#
         );

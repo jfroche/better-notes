@@ -99,12 +99,15 @@ pub enum CiStatus {
 pub struct PullRequest {
     pub number: u32,
     pub title: String,
+    pub description: Option<String>,
     pub status: PrStatus,
     pub ci_status: CiStatus,
     pub has_conflicts: bool,
     pub url: String,
     /// Commit hashes associated with this PR
     pub commit_hashes: Vec<String>,
+    /// Last updated date
+    pub updated_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 impl std::fmt::Display for PrStatus {
@@ -154,11 +157,13 @@ async fn fetch_github_prs(owner: &str, repo: &str) -> Result<Vec<PullRequest>> {
     struct GhPr {
         number: u32,
         title: String,
+        body: Option<String>,
         state: String,
         merged: Option<bool>,
         mergeable: Option<bool>,
         html_url: String,
         head: GhHead,
+        updated_at: Option<String>,
     }
 
     #[derive(Deserialize)]
@@ -221,14 +226,21 @@ async fn fetch_github_prs(owner: &str, repo: &str) -> Result<Vec<PullRequest>> {
         // Fetch commits for this PR
         let commit_hashes = fetch_github_pr_commits(&token, owner, repo, pr.number).await;
 
+        let updated_at = pr
+            .updated_at
+            .and_then(|s| chrono::DateTime::parse_from_rfc3339(&s).ok())
+            .map(|d| d.with_timezone(&chrono::Utc));
+
         result.push(PullRequest {
             number: pr.number,
             title: pr.title,
+            description: pr.body,
             status,
             ci_status,
             has_conflicts,
             url: pr.html_url,
             commit_hashes,
+            updated_at,
         });
     }
 
@@ -361,9 +373,11 @@ async fn fetch_gitea_prs(host: &str, owner: &str, repo: &str) -> Result<Vec<Pull
     struct GiteaPr {
         number: u32,
         title: String,
+        body: Option<String>,
         state: String,
         merged: Option<bool>,
         mergeable: Option<bool>,
+        updated_at: Option<String>,
     }
 
     let scheme = "https";
@@ -408,14 +422,21 @@ async fn fetch_gitea_prs(host: &str, owner: &str, repo: &str) -> Result<Vec<Pull
         // Fetch commits for this PR
         let commit_hashes = fetch_gitea_pr_commits(host, owner, repo, pr.number).await;
 
+        let updated_at = pr
+            .updated_at
+            .and_then(|s| chrono::DateTime::parse_from_rfc3339(&s).ok())
+            .map(|d| d.with_timezone(&chrono::Utc));
+
         result.push(PullRequest {
             number: pr.number,
             title: pr.title,
+            description: pr.body,
             status,
             ci_status,
             has_conflicts: pr.mergeable == Some(false),
             url: format!("{scheme}://{host}/{owner}/{repo}/pulls/{}", pr.number),
             commit_hashes,
+            updated_at,
         });
     }
 
@@ -530,11 +551,13 @@ async fn fetch_gitlab_prs(host: &str, owner: &str, repo: &str) -> Result<Vec<Pul
     struct GitLabMr {
         iid: u32,
         title: String,
+        description: Option<String>,
         state: String,
         has_conflicts: Option<bool>,
         detailed_merge_status: Option<String>,
         sha: Option<String>,
         author: GitLabUser,
+        updated_at: Option<String>,
     }
 
     #[derive(Deserialize)]
@@ -592,14 +615,21 @@ async fn fetch_gitlab_prs(host: &str, owner: &str, repo: &str) -> Result<Vec<Pul
         // Fetch commits for this MR
         let commit_hashes = fetch_gitlab_mr_commits(host, &token, owner, repo, mr.iid).await;
 
+        let updated_at = mr
+            .updated_at
+            .and_then(|s| chrono::DateTime::parse_from_rfc3339(&s).ok())
+            .map(|d| d.with_timezone(&chrono::Utc));
+
         result.push(PullRequest {
             number: mr.iid,
             title: mr.title,
+            description: mr.description,
             status,
             ci_status,
             has_conflicts: mr.has_conflicts.unwrap_or(false),
             url: format!("https://{host}/{owner}/{repo}/-/merge_requests/{}", mr.iid),
             commit_hashes,
+            updated_at,
         });
     }
 
