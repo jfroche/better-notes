@@ -1,5 +1,3 @@
-use std::process::Command;
-
 use anyhow::{Context, Result};
 use serde::Deserialize;
 
@@ -26,6 +24,33 @@ fn get_github_token() -> Option<String> {
     let hosts: std::collections::HashMap<String, GhHost> = serde_yaml::from_str(&content).ok()?;
 
     hosts.get("github.com").and_then(|h| h.oauth_token.clone())
+}
+
+/// Read GitLab token from glab CLI config or environment
+fn get_gitlab_token(host: &str) -> Option<String> {
+    // First check environment variable
+    if let Ok(token) = std::env::var("GITLAB_TOKEN") {
+        if !token.is_empty() {
+            return Some(token);
+        }
+    }
+
+    // Fall back to glab CLI config
+    #[derive(Deserialize)]
+    struct GlabConfig {
+        hosts: std::collections::HashMap<String, GlabHost>,
+    }
+
+    #[derive(Deserialize)]
+    struct GlabHost {
+        token: Option<String>,
+    }
+
+    let config_path = dirs::config_dir()?.join("glab-cli/config.yml");
+    let content = std::fs::read_to_string(&config_path).ok()?;
+    let config: GlabConfig = serde_yaml::from_str(&content).ok()?;
+
+    config.hosts.get(host).and_then(|h| h.token.clone())
 }
 
 /// Read Gitea token from tea config file
@@ -491,72 +516,151 @@ async fn fetch_gitea_ci_status(host: &str, owner: &str, repo: &str, pr_number: u
 }
 
 async fn fetch_gitlab_prs(host: &str, owner: &str, repo: &str) -> Result<Vec<PullRequest>> {
-    // Use glab CLI for GitLab
-    let output = Command::new("glab")
-        .args([
-            "mr",
-            "list",
-            "--repo",
-            &format!("{owner}/{repo}"),
-            "--author",
-            "@me",
-            "--all",
-            "-F",
-            "json",
-        ])
-        .output();
+    let token = get_gitlab_token(host);
+    if token.is_none() {
+        tracing::warn!("No GitLab token found for {host}, skipping GitLab MR fetch");
+        return Ok(Vec::new());
+    }
+    let token = token.unwrap();
 
-    match output {
-        Ok(o) if o.status.success() => {
-            #[derive(Deserialize)]
-            struct GlabMr {
-                iid: u32,
-                title: String,
-                state: String,
-                has_conflicts: Option<bool>,
-                #[serde(rename = "detailed_merge_status")]
-                detailed_merge_status: Option<String>,
-                sha: Option<String>,
-            }
+    // Get current user ID
+    let username = get_gitlab_username(host, &token).await?;
 
-            let mrs: Vec<GlabMr> = serde_json::from_slice(&o.stdout).unwrap_or_default();
+    #[derive(Deserialize)]
+    struct GitLabMr {
+        iid: u32,
+        title: String,
+        state: String,
+        has_conflicts: Option<bool>,
+        detailed_merge_status: Option<String>,
+        sha: Option<String>,
+        author: GitLabUser,
+    }
 
-            Ok(mrs
-                .into_iter()
-                .map(|mr| {
-                    let status = match mr.state.as_str() {
-                        "merged" => PrStatus::Merged,
-                        "closed" => PrStatus::Closed,
-                        _ => PrStatus::Open,
-                    };
+    #[derive(Deserialize)]
+    struct GitLabUser {
+        username: String,
+    }
 
-                    // CI status from detailed_merge_status
-                    let ci_status = match mr.detailed_merge_status.as_deref() {
-                        Some("ci_still_running") => CiStatus::Pending,
-                        Some("mergeable") => CiStatus::Success,
-                        Some("ci_must_pass") => CiStatus::Failure,
-                        _ => CiStatus::Unknown,
-                    };
+    // URL-encode the project path
+    let project_path = format!("{owner}/{repo}").replace('/', "%2F");
+    let url = format!(
+        "https://{host}/api/v4/projects/{project_path}/merge_requests?state=all&per_page=20&order_by=updated_at"
+    );
 
-                    // GitLab only provides the head commit SHA in glab output
-                    // Full commit list would require API calls
-                    let commit_hashes = mr.sha.into_iter().collect();
+    let client = reqwest::Client::new();
+    let response = client
+        .get(&url)
+        .header("PRIVATE-TOKEN", &token)
+        .header("User-Agent", "better-notes")
+        .send()
+        .await;
 
-                    PullRequest {
-                        number: mr.iid,
-                        title: mr.title,
-                        status,
-                        ci_status,
-                        has_conflicts: mr.has_conflicts.unwrap_or(false),
-                        url: format!("https://{host}/{owner}/{repo}/-/merge_requests/{}", mr.iid),
-                        commit_hashes,
-                    }
-                })
-                .collect())
+    let all_mrs: Vec<GitLabMr> = match response {
+        Ok(resp) if resp.status().is_success() => resp.json().await.unwrap_or_default(),
+        Ok(resp) => {
+            tracing::warn!("GitLab API error: {}", resp.status());
+            return Ok(Vec::new());
         }
-        _ => {
-            tracing::warn!("glab mr list failed");
-            Ok(Vec::new())
+        Err(e) => {
+            tracing::warn!("GitLab API request failed: {}", e);
+            return Ok(Vec::new());
         }
+    };
+
+    // Filter to only user's MRs
+    let mut result = Vec::new();
+    for mr in all_mrs {
+        if mr.author.username != username {
+            continue;
+        }
+
+        let status = match mr.state.as_str() {
+            "merged" => PrStatus::Merged,
+            "closed" => PrStatus::Closed,
+            _ => PrStatus::Open,
+        };
+
+        // CI status from detailed_merge_status
+        let ci_status = match mr.detailed_merge_status.as_deref() {
+            Some("ci_still_running") => CiStatus::Pending,
+            Some("mergeable") => CiStatus::Success,
+            Some("ci_must_pass") => CiStatus::Failure,
+            _ => CiStatus::Unknown,
+        };
+
+        // Fetch commits for this MR
+        let commit_hashes = fetch_gitlab_mr_commits(host, &token, owner, repo, mr.iid).await;
+
+        result.push(PullRequest {
+            number: mr.iid,
+            title: mr.title,
+            status,
+            ci_status,
+            has_conflicts: mr.has_conflicts.unwrap_or(false),
+            url: format!("https://{host}/{owner}/{repo}/-/merge_requests/{}", mr.iid),
+            commit_hashes,
+        });
+    }
+
+    Ok(result)
+}
+
+/// Get GitLab username from token
+async fn get_gitlab_username(host: &str, token: &str) -> Result<String> {
+    #[derive(Deserialize)]
+    struct GitLabUser {
+        username: String,
+    }
+
+    let client = reqwest::Client::new();
+    let response = client
+        .get(format!("https://{host}/api/v4/user"))
+        .header("PRIVATE-TOKEN", token)
+        .header("User-Agent", "better-notes")
+        .send()
+        .await
+        .context("Failed to fetch GitLab user")?;
+
+    let user: GitLabUser = response
+        .json()
+        .await
+        .context("Failed to parse GitLab user")?;
+    Ok(user.username)
+}
+
+/// Fetch commits for a GitLab MR
+async fn fetch_gitlab_mr_commits(
+    host: &str,
+    token: &str,
+    owner: &str,
+    repo: &str,
+    mr_iid: u32,
+) -> Vec<String> {
+    #[derive(Deserialize)]
+    struct GitLabCommit {
+        id: String,
+    }
+
+    let project_path = format!("{owner}/{repo}").replace('/', "%2F");
+    let url = format!(
+        "https://{host}/api/v4/projects/{project_path}/merge_requests/{mr_iid}/commits?per_page=100"
+    );
+
+    let client = reqwest::Client::new();
+    let response = client
+        .get(&url)
+        .header("PRIVATE-TOKEN", token)
+        .header("User-Agent", "better-notes")
+        .send()
+        .await;
+
+    match response {
+        Ok(resp) if resp.status().is_success() => resp
+            .json::<Vec<GitLabCommit>>()
+            .await
+            .map(|commits| commits.into_iter().map(|c| c.id).collect())
+            .unwrap_or_default(),
+        _ => Vec::new(),
     }
 }
