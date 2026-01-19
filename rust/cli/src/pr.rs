@@ -6,6 +6,30 @@ use serde::Deserialize;
 use crate::forge::Forge;
 use crate::git::Commit;
 
+/// Read Gitea token from tea config file
+fn get_gitea_token(host: &str) -> Option<String> {
+    #[derive(Deserialize)]
+    struct TeaConfig {
+        logins: Vec<TeaLogin>,
+    }
+
+    #[derive(Deserialize)]
+    struct TeaLogin {
+        url: String,
+        token: String,
+    }
+
+    let config_path = dirs::config_dir()?.join("tea/config.yml");
+    let content = std::fs::read_to_string(&config_path).ok()?;
+    let config: TeaConfig = serde_yaml::from_str(&content).ok()?;
+
+    config
+        .logins
+        .iter()
+        .find(|login| login.url.contains(host))
+        .map(|login| login.token.clone())
+}
+
 /// Pull request / merge request status
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PrStatus {
@@ -167,6 +191,7 @@ async fn fetch_gitea_prs(host: &str, owner: &str, repo: &str) -> Result<Vec<Pull
         number: u32,
         title: String,
         state: String,
+        merged: Option<bool>,
         mergeable: Option<bool>,
     }
 
@@ -174,7 +199,14 @@ async fn fetch_gitea_prs(host: &str, owner: &str, repo: &str) -> Result<Vec<Pull
     let url = format!("{scheme}://{host}/api/v1/repos/{owner}/{repo}/pulls?state=all&limit=20");
 
     let client = reqwest::Client::new();
-    let response = client.get(&url).send().await;
+    let mut request = client.get(&url);
+
+    // Add authentication if token is available
+    if let Some(token) = get_gitea_token(host) {
+        request = request.header("Authorization", format!("token {token}"));
+    }
+
+    let response = request.send().await;
 
     let prs: Vec<GiteaPr> = match response {
         Ok(resp) if resp.status().is_success() => resp.json().await.unwrap_or_default(),
@@ -186,10 +218,13 @@ async fn fetch_gitea_prs(host: &str, owner: &str, repo: &str) -> Result<Vec<Pull
 
     let mut result = Vec::new();
     for pr in prs {
-        let status = match pr.state.as_str() {
-            "merged" => PrStatus::Merged,
-            "closed" => PrStatus::Closed,
-            _ => PrStatus::Open,
+        let status = if pr.merged == Some(true) {
+            PrStatus::Merged
+        } else {
+            match pr.state.as_str() {
+                "closed" => PrStatus::Closed,
+                _ => PrStatus::Open,
+            }
         };
 
         // Fetch CI status for open PRs
@@ -219,6 +254,7 @@ async fn fetch_gitea_ci_status(host: &str, owner: &str, repo: &str, pr_number: u
     }
 
     let scheme = "https";
+    let token = get_gitea_token(host);
 
     // First get the PR to find the head commit
     let pr_url = format!("{scheme}://{host}/api/v1/repos/{owner}/{repo}/pulls/{pr_number}");
@@ -234,7 +270,12 @@ async fn fetch_gitea_ci_status(host: &str, owner: &str, repo: &str, pr_number: u
         sha: Option<String>,
     }
 
-    let sha = match client.get(&pr_url).send().await {
+    let mut request = client.get(&pr_url);
+    if let Some(ref token) = token {
+        request = request.header("Authorization", format!("token {token}"));
+    }
+
+    let sha = match request.send().await {
         Ok(resp) if resp.status().is_success() => resp
             .json::<PrHead>()
             .await
@@ -250,7 +291,11 @@ async fn fetch_gitea_ci_status(host: &str, owner: &str, repo: &str, pr_number: u
 
     // Fetch combined status for the commit
     let status_url = format!("{scheme}://{host}/api/v1/repos/{owner}/{repo}/commits/{sha}/status");
-    match client.get(&status_url).send().await {
+    let mut request = client.get(&status_url);
+    if let Some(ref token) = token {
+        request = request.header("Authorization", format!("token {token}"));
+    }
+    match request.send().await {
         Ok(resp) if resp.status().is_success() => match resp.json::<CombinedStatus>().await {
             Ok(status) => match status.state.as_str() {
                 "success" => CiStatus::Success,
