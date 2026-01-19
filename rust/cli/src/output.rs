@@ -1,12 +1,28 @@
 use std::collections::{BTreeMap, HashSet};
 
 use anyhow::Result;
-use chrono::{DateTime, NaiveDate, Utc};
+use chrono::{DateTime, NaiveDate, Timelike, Utc};
 
 use crate::forge::Forge;
 use crate::git::Commit;
 use crate::pr::{CiStatus, PrStatus, PullRequest};
 use crate::summary::Summarizer;
+
+/// Time grouping key - either a date or an hour within a day
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum TimeGroup {
+    Date(NaiveDate),
+    Hour(NaiveDate, u32),
+}
+
+impl TimeGroup {
+    fn format(&self) -> String {
+        match self {
+            TimeGroup::Date(date) => format!("{}", date.format("%Y-%m-%d (%A)")),
+            TimeGroup::Hour(date, hour) => format!("{} {:02}h", date.format("%Y-%m-%d"), hour),
+        }
+    }
+}
 
 /// Collect all commit hashes associated with PRs
 fn collect_pr_commit_hashes(prs: &[PullRequest]) -> HashSet<&str> {
@@ -30,40 +46,50 @@ impl<'a> DisplayItem<'a> {
     }
 }
 
-/// Group items by date
-fn group_by_date<'a>(
+/// Group items by time (date or hour depending on single_day flag)
+fn group_by_time<'a>(
     commits: &'a [Commit],
     prs: &'a [PullRequest],
     pr_commits: &HashSet<&str>,
-) -> BTreeMap<NaiveDate, Vec<DisplayItem<'a>>> {
-    let mut by_date: BTreeMap<NaiveDate, Vec<DisplayItem<'a>>> = BTreeMap::new();
+    single_day: bool,
+) -> BTreeMap<TimeGroup, Vec<DisplayItem<'a>>> {
+    let mut by_time: BTreeMap<TimeGroup, Vec<DisplayItem<'a>>> = BTreeMap::new();
+
+    let make_key = |dt: DateTime<Utc>| -> TimeGroup {
+        if single_day {
+            TimeGroup::Hour(dt.date_naive(), dt.hour())
+        } else {
+            TimeGroup::Date(dt.date_naive())
+        }
+    };
 
     // Add commits not associated with PRs
     for commit in commits {
         if pr_commits.contains(commit.hash.as_str()) {
             continue;
         }
-        let date = commit.date.date_naive();
-        by_date
-            .entry(date)
+        let key = make_key(commit.date);
+        by_time
+            .entry(key)
             .or_default()
             .push(DisplayItem::Commit(commit));
     }
 
     // Add PRs
     for pr in prs {
-        let date = pr
-            .updated_at
-            .map(|d| d.date_naive())
-            .unwrap_or_else(|| Utc::now().date_naive());
-        by_date.entry(date).or_default().push(DisplayItem::Pr(pr));
+        let dt = pr.updated_at.unwrap_or_else(Utc::now);
+        let key = make_key(dt);
+        by_time.entry(key).or_default().push(DisplayItem::Pr(pr));
     }
 
-    by_date
+    by_time
 }
 
 /// Format output without LLM summaries
-pub fn format_without_summary(groups: &[(Forge, Vec<Commit>, Vec<PullRequest>)]) -> String {
+pub fn format_without_summary(
+    groups: &[(Forge, Vec<Commit>, Vec<PullRequest>)],
+    single_day: bool,
+) -> String {
     let mut output = String::new();
     output.push_str("## Git activity\n\n");
 
@@ -77,10 +103,10 @@ pub fn format_without_summary(groups: &[(Forge, Vec<Commit>, Vec<PullRequest>)])
         // Collect commits that are part of PRs to filter them out
         let pr_commits = collect_pr_commit_hashes(prs);
 
-        // Group by date (reverse order - most recent first)
-        let by_date = group_by_date(commits, prs, &pr_commits);
-        for (date, items) in by_date.into_iter().rev() {
-            output.push_str(&format!("#### {}\n\n", date.format("%Y-%m-%d (%A)")));
+        // Group by time (reverse order - most recent first)
+        let by_time = group_by_time(commits, prs, &pr_commits, single_day);
+        for (time_group, items) in by_time.into_iter().rev() {
+            output.push_str(&format!("#### {}\n\n", time_group.format()));
 
             for item in items {
                 match item {
@@ -107,6 +133,7 @@ pub fn format_without_summary(groups: &[(Forge, Vec<Commit>, Vec<PullRequest>)])
 /// Format output with LLM-generated summaries
 pub async fn format_with_summary(
     groups: &[(Forge, Vec<Commit>, Vec<PullRequest>)],
+    single_day: bool,
 ) -> Result<String> {
     let summarizer = match Summarizer::new() {
         Ok(s) => Some(s),
@@ -145,10 +172,10 @@ pub async fn format_with_summary(
             }
         }
 
-        // Group by date (reverse order - most recent first)
-        let by_date = group_by_date(commits, prs, &pr_commits);
-        for (date, items) in by_date.into_iter().rev() {
-            output.push_str(&format!("#### {}\n\n", date.format("%Y-%m-%d (%A)")));
+        // Group by time (reverse order - most recent first)
+        let by_time = group_by_time(commits, prs, &pr_commits, single_day);
+        for (time_group, items) in by_time.into_iter().rev() {
+            output.push_str(&format!("#### {}\n\n", time_group.format()));
 
             for item in items {
                 match item {

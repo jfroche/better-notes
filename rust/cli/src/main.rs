@@ -98,11 +98,12 @@ async fn run_standup(args: StandupArgs) -> Result<()> {
         enriched_groups.push((forge, commits, prs));
     }
 
-    // Generate summaries if enabled
+    // Generate output (group by hours if single day)
+    let single_day = args.days == 1;
     let output = if args.no_summary {
-        output::format_without_summary(&enriched_groups)
+        output::format_without_summary(&enriched_groups, single_day)
     } else {
-        output::format_with_summary(&enriched_groups).await?
+        output::format_with_summary(&enriched_groups, single_day).await?
     };
 
     println!("{output}");
