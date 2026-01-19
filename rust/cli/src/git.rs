@@ -218,11 +218,11 @@ pub fn get_commits(
         }
 
         commits.push(Commit {
-            hash: parts[0].to_string(),
-            short_hash: parts[1].to_string(),
+            hash: parts[0].trim().to_string(),
+            short_hash: parts[1].trim().to_string(),
             subject: subject.to_string(),
             body,
-            author: parts[4].to_string(),
+            author: parts[4].trim().to_string(),
             date,
         });
     }
