@@ -95,7 +95,16 @@ async fn run_standup(args: StandupArgs) -> Result<()> {
     let mut enriched_groups = Vec::new();
     for (forge, commits) in grouped {
         let prs = pr::fetch_prs_for_commits(&forge, &commits).await?;
-        enriched_groups.push((forge, commits, prs));
+        // Filter PRs to only those updated within the date range
+        let filtered_prs: Vec<_> = prs
+            .into_iter()
+            .filter(|pr| {
+                pr.updated_at
+                    .map(|dt| dt >= since && dt <= target_date)
+                    .unwrap_or(false)
+            })
+            .collect();
+        enriched_groups.push((forge, commits, filtered_prs));
     }
 
     // Generate output (group by hours if single day)
