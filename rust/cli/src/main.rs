@@ -15,6 +15,10 @@ mod summary;
 #[command(about = "Tools for enhancing daily notes")]
 #[command(version)]
 struct Cli {
+    /// Enable debug logging
+    #[arg(long, global = true)]
+    debug: bool,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -46,11 +50,14 @@ struct StandupArgs {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env())
-        .init();
-
     let cli = Cli::parse();
+
+    let default_level = if cli.debug { "debug" } else { "warn" };
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default_level));
+    tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_writer(std::io::stderr)
+        .init();
 
     match cli.command {
         Commands::Standup(args) => run_standup(args).await?,
