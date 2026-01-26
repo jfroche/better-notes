@@ -69,9 +69,14 @@ async fn main() -> Result<()> {
 async fn run_standup(args: StandupArgs) -> Result<()> {
     tracing::info!("Running standup for {:?}", args.projects_dir);
 
-    // Parse target date
+    // Parse target date (end of day)
     let target_date = git::parse_date(&args.date)?;
-    let since = target_date - chrono::Duration::days(args.days as i64);
+    // Calculate start of first day to include: with days=1, show only target date
+    let start_date = target_date.date_naive() - chrono::Duration::days((args.days - 1) as i64);
+    let since = chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(
+        start_date.and_hms_opt(0, 0, 0).unwrap(),
+        chrono::Utc,
+    );
 
     tracing::debug!("Looking for commits from {} to {}", since, target_date);
 
