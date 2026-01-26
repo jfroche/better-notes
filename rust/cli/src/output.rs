@@ -47,19 +47,28 @@ impl<'a> DisplayItem<'a> {
 }
 
 /// Group items by time (date or hour depending on single_day flag)
+/// The late_night_offset shifts the day boundary - commits before that hour count as previous day.
 fn group_by_time<'a>(
     commits: &'a [Commit],
     prs: &'a [PullRequest],
     pr_commits: &HashSet<&str>,
     single_day: bool,
+    late_night_offset: u32,
 ) -> BTreeMap<TimeGroup, Vec<DisplayItem<'a>>> {
     let mut by_time: BTreeMap<TimeGroup, Vec<DisplayItem<'a>>> = BTreeMap::new();
 
     let make_key = |dt: DateTime<Utc>| -> TimeGroup {
-        if single_day {
-            TimeGroup::Hour(dt.date_naive(), dt.hour())
+        // Shift the date back if the hour is before the offset (late-night work)
+        let logical_date = if dt.hour() < late_night_offset {
+            dt.date_naive() - chrono::Duration::days(1)
         } else {
-            TimeGroup::Date(dt.date_naive())
+            dt.date_naive()
+        };
+
+        if single_day {
+            TimeGroup::Hour(logical_date, dt.hour())
+        } else {
+            TimeGroup::Date(logical_date)
         }
     };
 
@@ -89,6 +98,7 @@ fn group_by_time<'a>(
 pub fn format_without_summary(
     groups: &[(Forge, Vec<Commit>, Vec<PullRequest>)],
     single_day: bool,
+    late_night_offset: u32,
 ) -> String {
     let mut output = String::new();
     output.push_str("## Git activity\n\n");
@@ -104,7 +114,7 @@ pub fn format_without_summary(
         let pr_commits = collect_pr_commit_hashes(prs);
 
         // Group by time (reverse order - most recent first)
-        let by_time = group_by_time(commits, prs, &pr_commits, single_day);
+        let by_time = group_by_time(commits, prs, &pr_commits, single_day, late_night_offset);
         for (time_group, items) in by_time.into_iter().rev() {
             output.push_str(&format!("#### {}\n\n", time_group.format()));
 
@@ -134,6 +144,7 @@ pub fn format_without_summary(
 pub async fn format_with_summary(
     groups: &[(Forge, Vec<Commit>, Vec<PullRequest>)],
     single_day: bool,
+    late_night_offset: u32,
 ) -> Result<String> {
     let summarizer = match Summarizer::new() {
         Ok(s) => Some(s),
@@ -173,7 +184,7 @@ pub async fn format_with_summary(
         }
 
         // Group by time (reverse order - most recent first)
-        let by_time = group_by_time(commits, prs, &pr_commits, single_day);
+        let by_time = group_by_time(commits, prs, &pr_commits, single_day, late_night_offset);
         for (time_group, items) in by_time.into_iter().rev() {
             output.push_str(&format!("#### {}\n\n", time_group.format()));
 
