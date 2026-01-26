@@ -217,6 +217,12 @@ pub fn get_commits(
             continue;
         }
 
+        // Filter by author date (git --since/--until filter by committer date,
+        // but jj workflows preserve author date while updating committer date)
+        if date < *since || date > *until {
+            continue;
+        }
+
         commits.push(Commit {
             hash: parts[0].trim().to_string(),
             short_hash: parts[1].trim().to_string(),
