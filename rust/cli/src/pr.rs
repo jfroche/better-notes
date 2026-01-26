@@ -368,7 +368,35 @@ async fn fetch_github_pr_commits(
     }
 }
 
+/// Get Gitea username from token
+async fn get_gitea_username(host: &str, token: &str) -> Result<String> {
+    #[derive(Deserialize)]
+    struct GiteaUser {
+        login: String,
+    }
+
+    let scheme = "https";
+    let client = reqwest::Client::new();
+    let response = client
+        .get(format!("{scheme}://{host}/api/v1/user"))
+        .header("Authorization", format!("token {token}"))
+        .send()
+        .await
+        .context("Failed to fetch Gitea user")?;
+
+    let user: GiteaUser = response
+        .json()
+        .await
+        .context("Failed to parse Gitea user")?;
+    Ok(user.login)
+}
+
 async fn fetch_gitea_prs(host: &str, owner: &str, repo: &str) -> Result<Vec<PullRequest>> {
+    #[derive(Deserialize)]
+    struct GiteaUser {
+        login: String,
+    }
+
     #[derive(Deserialize)]
     struct GiteaPr {
         number: u32,
@@ -378,16 +406,25 @@ async fn fetch_gitea_prs(host: &str, owner: &str, repo: &str) -> Result<Vec<Pull
         merged: Option<bool>,
         mergeable: Option<bool>,
         updated_at: Option<String>,
+        user: GiteaUser,
     }
 
     let scheme = "https";
     let url = format!("{scheme}://{host}/api/v1/repos/{owner}/{repo}/pulls?state=all&limit=20");
 
+    let token = get_gitea_token(host);
+
+    // Get current username to filter PRs by author
+    let username = match &token {
+        Some(t) => get_gitea_username(host, t).await.ok(),
+        None => None,
+    };
+
     let client = reqwest::Client::new();
     let mut request = client.get(&url);
 
     // Add authentication if token is available
-    if let Some(token) = get_gitea_token(host) {
+    if let Some(ref token) = token {
         request = request.header("Authorization", format!("token {token}"));
     }
 
@@ -403,6 +440,12 @@ async fn fetch_gitea_prs(host: &str, owner: &str, repo: &str) -> Result<Vec<Pull
 
     let mut result = Vec::new();
     for pr in prs {
+        // Filter to only user's PRs
+        if let Some(ref username) = username {
+            if pr.user.login != *username {
+                continue;
+            }
+        }
         let status = if pr.merged == Some(true) {
             PrStatus::Merged
         } else {
