@@ -39,6 +39,11 @@ struct StandupArgs {
     #[arg(short = 'n', long, default_value = "1")]
     days: u32,
 
+    /// Hour offset for day boundary (0-6). Commits before this hour count as previous day.
+    /// Useful for late-night work: --late-night-offset 2 means 00:00-02:00 counts as previous day.
+    #[arg(long, default_value = "2", value_parser = clap::value_parser!(u32).range(0..=6))]
+    late_night_offset: u32,
+
     /// Projects root directory
     #[arg(short, long, default_value = "/home/jfroche/projects")]
     projects_dir: PathBuf,
@@ -71,14 +76,27 @@ async fn run_standup(args: StandupArgs) -> Result<()> {
 
     // Parse target date (end of day)
     let target_date = git::parse_date(&args.date)?;
+
+    // With late_night_offset, the "logical day" starts at offset:00 and ends at offset:00 next day.
+    // E.g., with offset=2, "Monday" runs from Mon 02:00 to Tue 01:59:59.
+    let offset_hours = args.late_night_offset as i64;
+
     // Calculate start of first day to include: with days=1, show only target date
     let start_date = target_date.date_naive() - chrono::Duration::days((args.days - 1) as i64);
     let since = chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(
-        start_date.and_hms_opt(0, 0, 0).unwrap(),
+        start_date.and_hms_opt(offset_hours as u32, 0, 0).unwrap(),
         chrono::Utc,
     );
 
-    tracing::debug!("Looking for commits from {} to {}", since, target_date);
+    // End of range: target_date + 1 day at offset:00 - 1 second (i.e., offset-1:59:59 next day)
+    let until = chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(
+        (target_date.date_naive() + chrono::Duration::days(1))
+            .and_hms_opt(offset_hours as u32, 0, 0)
+            .unwrap(),
+        chrono::Utc,
+    ) - chrono::Duration::seconds(1);
+
+    tracing::debug!("Looking for commits from {} to {}", since, until);
 
     // Discover repositories
     let repos = git::discover_repositories(&args.projects_dir)?;
@@ -87,7 +105,7 @@ async fn run_standup(args: StandupArgs) -> Result<()> {
     // Collect commits from all repositories
     let mut all_commits = Vec::new();
     for repo in &repos {
-        match git::get_commits(repo, &since, &target_date) {
+        match git::get_commits(repo, &since, &until) {
             Ok(commits) => {
                 if !commits.is_empty() {
                     tracing::debug!("Found {} commits in {:?}", commits.len(), repo.path);
@@ -112,7 +130,7 @@ async fn run_standup(args: StandupArgs) -> Result<()> {
             .into_iter()
             .filter(|pr| {
                 pr.updated_at
-                    .map(|dt| dt >= since && dt <= target_date)
+                    .map(|dt| dt >= since && dt <= until)
                     .unwrap_or(false)
             })
             .collect();
@@ -122,9 +140,9 @@ async fn run_standup(args: StandupArgs) -> Result<()> {
     // Generate output (group by hours if single day)
     let single_day = args.days == 1;
     let output = if args.no_summary {
-        output::format_without_summary(&enriched_groups, single_day)
+        output::format_without_summary(&enriched_groups, single_day, args.late_night_offset)
     } else {
-        output::format_with_summary(&enriched_groups, single_day).await?
+        output::format_with_summary(&enriched_groups, single_day, args.late_night_offset).await?
     };
 
     println!("{output}");
