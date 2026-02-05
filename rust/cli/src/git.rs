@@ -155,8 +155,9 @@ pub fn get_commits(
 ) -> Result<Vec<Commit>> {
     let author = get_git_author()?;
 
-    let since_str = since.format("%Y-%m-%d").to_string();
-    let until_str = until.format("%Y-%m-%d").to_string();
+    // Use full timestamps to respect late-night-offset adjustments
+    let since_str = since.format("%Y-%m-%d %H:%M:%S").to_string();
+    let until_str = until.format("%Y-%m-%d %H:%M:%S").to_string();
 
     // Use record separator (%x00) between commits and field separator (%x1f) between fields
     // Format: hash<US>short_hash<US>subject<US>body<US>author<US>date<RS>
@@ -170,7 +171,7 @@ pub fn get_commits(
             "--no-merges",
             &format!("--author={author}"),
             &format!("--since={since_str}"),
-            &format!("--until={until_str} 23:59:59"),
+            &format!("--until={until_str}"),
             "--pretty=format:%H%x1f%h%x1f%s%x1f%b%x1f%an%x1f%aI%x00",
         ])
         .current_dir(&repo.path)
