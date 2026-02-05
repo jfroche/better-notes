@@ -598,6 +598,7 @@ async fn fetch_gitlab_prs(host: &str, owner: &str, repo: &str) -> Result<Vec<Pul
         state: String,
         has_conflicts: Option<bool>,
         detailed_merge_status: Option<String>,
+        #[allow(dead_code)]
         sha: Option<String>,
         author: GitLabUser,
         updated_at: Option<String>,
