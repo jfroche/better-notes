@@ -37,14 +37,6 @@ enum DisplayItem<'a> {
     Pr(&'a PullRequest),
 }
 
-impl<'a> DisplayItem<'a> {
-    fn date(&self) -> Option<DateTime<Utc>> {
-        match self {
-            DisplayItem::Commit(c) => Some(c.date),
-            DisplayItem::Pr(pr) => pr.updated_at,
-        }
-    }
-}
 
 /// Group items by time (date or hour depending on single_day flag)
 /// The late_night_offset shifts the day boundary - commits before that hour count as previous day.
