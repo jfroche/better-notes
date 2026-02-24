@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
 package.version = "0.1.0"
-package.license = "MIT"
+package.license = "GPL-3.0-only"
 metadata.crane.name = "better-notes"
 
 members = ["rust/*"]
