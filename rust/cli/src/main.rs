@@ -44,9 +44,9 @@ struct StandupArgs {
     #[arg(long, default_value = "2", value_parser = clap::value_parser!(u32).range(0..=6))]
     late_night_offset: u32,
 
-    /// Projects root directory
-    #[arg(short, long, default_value = "/home/jfroche/projects")]
-    projects_dir: PathBuf,
+    /// Projects root directory (default: ~/projects)
+    #[arg(short, long)]
+    projects_dir: Option<PathBuf>,
 
     /// Skip LLM summarization (just list commits)
     #[arg(long)]
@@ -72,7 +72,12 @@ async fn main() -> Result<()> {
 }
 
 async fn run_standup(args: StandupArgs) -> Result<()> {
-    tracing::info!("Running standup for {:?}", args.projects_dir);
+    let projects_dir = args.projects_dir.unwrap_or_else(|| {
+        dirs::home_dir()
+            .expect("could not determine home directory")
+            .join("projects")
+    });
+    tracing::info!("Running standup for {:?}", projects_dir);
 
     // Parse target date (end of day)
     let target_date = git::parse_date(&args.date)?;
@@ -99,7 +104,7 @@ async fn run_standup(args: StandupArgs) -> Result<()> {
     tracing::debug!("Looking for commits from {} to {}", since, until);
 
     // Discover repositories
-    let repos = git::discover_repositories(&args.projects_dir)?;
+    let repos = git::discover_repositories(&projects_dir)?;
     tracing::info!("Found {} repositories", repos.len());
 
     // Collect commits from all repositories
@@ -119,7 +124,7 @@ async fn run_standup(args: StandupArgs) -> Result<()> {
     }
 
     // Deduplicate and group by forge
-    let grouped = git::deduplicate_and_group(all_commits, &args.projects_dir);
+    let grouped = git::deduplicate_and_group(all_commits, &projects_dir);
 
     // Fetch PR status for each group
     let mut enriched_groups = Vec::new();
