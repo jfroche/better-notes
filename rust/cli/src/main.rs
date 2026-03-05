@@ -1,9 +1,11 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::{Args, Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
 
+mod conversation;
 mod forge;
 mod git;
 mod output;
@@ -51,6 +53,14 @@ struct StandupArgs {
     /// Skip LLM summarization (just list commits)
     #[arg(long)]
     no_summary: bool,
+
+    /// Skip conversation extraction from Claude Code sessions
+    #[arg(long)]
+    no_conversation: bool,
+
+    /// Directory for generated conversation markdown files
+    #[arg(long, default_value = "./conversations")]
+    conversations_dir: PathBuf,
 }
 
 #[tokio::main]
@@ -142,12 +152,47 @@ async fn run_standup(args: StandupArgs) -> Result<()> {
         enriched_groups.push((forge, commits, filtered_prs));
     }
 
+    // Extract conversation context from Claude Code sessions
+    let conversation_groups = if args.no_conversation {
+        HashMap::new()
+    } else {
+        match conversation::read_history(&since, &until) {
+            Ok(entries) if !entries.is_empty() => {
+                tracing::info!("Found {} conversation entries", entries.len());
+                let matched = conversation::match_to_repos(&entries, &repos);
+                tracing::debug!("Matched {} entries to repositories", matched.len());
+                conversation::convert_all_sessions(&matched, &args.conversations_dir)
+            }
+            Ok(_) => {
+                tracing::debug!("No conversation entries found for date range");
+                HashMap::new()
+            }
+            Err(e) => {
+                tracing::warn!("Failed to read conversation history: {}", e);
+                HashMap::new()
+            }
+        }
+    };
+
     // Generate output (group by hours if single day)
     let single_day = args.days == 1;
     let output = if args.no_summary {
-        output::format_without_summary(&enriched_groups, single_day, args.late_night_offset)
+        output::format_without_summary(
+            &enriched_groups,
+            &conversation_groups,
+            &args.conversations_dir,
+            single_day,
+            args.late_night_offset,
+        )
     } else {
-        output::format_with_summary(&enriched_groups, single_day, args.late_night_offset).await?
+        output::format_with_summary(
+            &enriched_groups,
+            &conversation_groups,
+            &args.conversations_dir,
+            single_day,
+            args.late_night_offset,
+        )
+        .await?
     };
 
     println!("{output}");
