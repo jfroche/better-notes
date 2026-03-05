@@ -1,8 +1,10 @@
 use std::collections::{BTreeMap, HashSet};
+use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use chrono::{DateTime, NaiveDate, Timelike, Utc};
 
+use crate::conversation::ConversationEntry;
 use crate::forge::Forge;
 use crate::git::Commit;
 use crate::pr::{CiStatus, PrStatus, PullRequest};
@@ -31,10 +33,14 @@ fn collect_pr_commit_hashes(prs: &[PullRequest]) -> HashSet<&str> {
         .collect()
 }
 
-/// Item that can be displayed (either a commit or a PR)
+/// Item that can be displayed in the timeline
 enum DisplayItem<'a> {
     Commit(&'a Commit),
     Pr(&'a PullRequest),
+    Conversation {
+        entry: &'a ConversationEntry,
+        markdown_path: Option<&'a Path>,
+    },
 }
 
 
@@ -43,6 +49,7 @@ enum DisplayItem<'a> {
 fn group_by_time<'a>(
     commits: &'a [Commit],
     prs: &'a [PullRequest],
+    conversations: &'a [(ConversationEntry, Option<PathBuf>)],
     pr_commits: &HashSet<&str>,
     single_day: bool,
     late_night_offset: u32,
@@ -83,51 +90,61 @@ fn group_by_time<'a>(
         by_time.entry(key).or_default().push(DisplayItem::Pr(pr));
     }
 
+    // Add conversation entries
+    for (entry, md_path) in conversations {
+        let key = make_key(entry.timestamp);
+        by_time
+            .entry(key)
+            .or_default()
+            .push(DisplayItem::Conversation {
+                entry,
+                markdown_path: md_path.as_deref(),
+            });
+    }
+
     by_time
 }
 
 /// Format output without LLM summaries
 pub fn format_without_summary(
     groups: &[(Forge, Vec<Commit>, Vec<PullRequest>)],
+    conversations: &std::collections::HashMap<String, Vec<(ConversationEntry, Option<PathBuf>)>>,
+    conversations_dir: &Path,
     single_day: bool,
     late_night_offset: u32,
 ) -> String {
     let mut output = String::new();
     output.push_str("## Git activity\n\n");
 
+    let empty_conversations = Vec::new();
+
     for (forge, commits, prs) in groups {
-        if commits.is_empty() && prs.is_empty() {
+        let convos = conversations
+            .get(&forge.display_name())
+            .unwrap_or(&empty_conversations);
+
+        if commits.is_empty() && prs.is_empty() && convos.is_empty() {
             continue;
         }
 
         output.push_str(&format!("### {}\n\n", forge.display_name()));
 
-        // Collect commits that are part of PRs to filter them out
         let pr_commits = collect_pr_commit_hashes(prs);
 
-        // Group by time (reverse order - most recent first)
-        let by_time = group_by_time(commits, prs, &pr_commits, single_day, late_night_offset);
+        let by_time = group_by_time(commits, prs, convos, &pr_commits, single_day, late_night_offset);
         for (time_group, items) in by_time.into_iter().rev() {
             output.push_str(&format!("#### {}\n\n", time_group.format()));
 
             for item in items {
-                match item {
-                    DisplayItem::Commit(commit) => {
-                        let url = forge.commit_url(&commit.hash);
-                        output.push_str(&format!(
-                            "- [{}]({}) - {}\n",
-                            commit.short_hash, url, commit.subject
-                        ));
-                    }
-                    DisplayItem::Pr(pr) => {
-                        output.push_str(&format_pr(pr));
-                    }
-                }
+                render_item(&mut output, &item, forge, conversations_dir);
             }
 
             output.push('\n');
         }
     }
+
+    // Render conversation-only groups (repos with conversations but no commits/PRs)
+    render_conversation_only_groups(&mut output, groups, conversations, conversations_dir, single_day, late_night_offset);
 
     output.trim_end().to_string()
 }
@@ -135,6 +152,8 @@ pub fn format_without_summary(
 /// Format output with LLM-generated summaries
 pub async fn format_with_summary(
     groups: &[(Forge, Vec<Commit>, Vec<PullRequest>)],
+    conversations: &std::collections::HashMap<String, Vec<(ConversationEntry, Option<PathBuf>)>>,
+    conversations_dir: &Path,
     single_day: bool,
     late_night_offset: u32,
 ) -> Result<String> {
@@ -149,20 +168,27 @@ pub async fn format_with_summary(
     let mut output = String::new();
     output.push_str("## Git activity\n\n");
 
+    let empty_conversations = Vec::new();
+
     for (forge, commits, prs) in groups {
-        if commits.is_empty() && prs.is_empty() {
+        let convos = conversations
+            .get(&forge.display_name())
+            .unwrap_or(&empty_conversations);
+
+        if commits.is_empty() && prs.is_empty() && convos.is_empty() {
             continue;
         }
 
         output.push_str(&format!("### {}\n\n", forge.display_name()));
 
-        // Collect commits that are part of PRs to filter them out from listing
         let pr_commits = collect_pr_commit_hashes(prs);
 
-        // Generate summary from all commits and PRs
+        // Generate summary from commits, PRs, and conversations
         if let Some(ref summarizer) = summarizer {
-            if !commits.is_empty() || !prs.is_empty() {
-                match summarizer.summarize(commits, prs).await {
+            if !commits.is_empty() || !prs.is_empty() || !convos.is_empty() {
+                let convo_entries: Vec<&ConversationEntry> =
+                    convos.iter().map(|(e, _)| e).collect();
+                match summarizer.summarize(commits, prs, &convo_entries).await {
                     Ok(summary) if !summary.is_empty() => {
                         output.push_str(&summary);
                         output.push_str("\n\n");
@@ -175,22 +201,110 @@ pub async fn format_with_summary(
             }
         }
 
-        // Group by time (reverse order - most recent first)
-        let by_time = group_by_time(commits, prs, &pr_commits, single_day, late_night_offset);
+        let by_time = group_by_time(commits, prs, convos, &pr_commits, single_day, late_night_offset);
         for (time_group, items) in by_time.into_iter().rev() {
             output.push_str(&format!("#### {}\n\n", time_group.format()));
 
             for item in items {
-                match item {
-                    DisplayItem::Commit(commit) => {
-                        let url = forge.commit_url(&commit.hash);
-                        output.push_str(&format!(
-                            "- [{}]({}) - {}\n",
-                            commit.short_hash, url, commit.subject
-                        ));
-                    }
-                    DisplayItem::Pr(pr) => {
-                        output.push_str(&format_pr(pr));
+                render_item(&mut output, &item, forge, conversations_dir);
+            }
+
+            output.push('\n');
+        }
+    }
+
+    // Render conversation-only groups
+    render_conversation_only_groups(&mut output, groups, conversations, conversations_dir, single_day, late_night_offset);
+
+    Ok(output.trim_end().to_string())
+}
+
+fn render_item(output: &mut String, item: &DisplayItem, forge: &Forge, conversations_dir: &Path) {
+    match item {
+        DisplayItem::Commit(commit) => {
+            let url = forge.commit_url(&commit.hash);
+            output.push_str(&format!(
+                "- [{}]({}) - {}\n",
+                commit.short_hash, url, commit.subject
+            ));
+        }
+        DisplayItem::Pr(pr) => {
+            output.push_str(&format_pr(pr));
+        }
+        DisplayItem::Conversation { entry, markdown_path } => {
+            let time = entry.timestamp.format("%H:%M");
+            match markdown_path {
+                Some(path) => {
+                    let relative = path
+                        .strip_prefix(conversations_dir.parent().unwrap_or(Path::new(".")))
+                        .unwrap_or(path);
+                    output.push_str(&format!(
+                        "- [\"{}\"]({}) ({})\n",
+                        entry.display,
+                        relative.display(),
+                        time
+                    ));
+                }
+                None => {
+                    output.push_str(&format!(
+                        "- \"{}\" ({})\n",
+                        entry.display, time
+                    ));
+                }
+            }
+        }
+    }
+}
+
+/// Render conversation entries for repos that have no commits or PRs
+fn render_conversation_only_groups(
+    output: &mut String,
+    groups: &[(Forge, Vec<Commit>, Vec<PullRequest>)],
+    conversations: &std::collections::HashMap<String, Vec<(ConversationEntry, Option<PathBuf>)>>,
+    conversations_dir: &Path,
+    single_day: bool,
+    late_night_offset: u32,
+) {
+    let existing_forges: HashSet<String> = groups.iter().map(|(f, _, _)| f.display_name()).collect();
+
+    for (forge_name, convos) in conversations {
+        if existing_forges.contains(forge_name) || convos.is_empty() {
+            continue;
+        }
+
+        output.push_str(&format!("\n### {}\n\n", forge_name));
+
+        let empty_commits: Vec<Commit> = Vec::new();
+        let empty_prs: Vec<PullRequest> = Vec::new();
+        let empty_hashes: HashSet<&str> = HashSet::new();
+
+        let by_time = group_by_time(&empty_commits, &empty_prs, convos, &empty_hashes, single_day, late_night_offset);
+        for (time_group, items) in by_time.into_iter().rev() {
+            output.push_str(&format!("#### {}\n\n", time_group.format()));
+
+            // We need a dummy forge for render_item but it won't be used for conversations
+            // Use a placeholder since only conversation items exist here
+            for item in items {
+                if let DisplayItem::Conversation { entry, markdown_path } = &item {
+                    let time = entry.timestamp.format("%H:%M");
+                    match markdown_path {
+                        Some(path) => {
+                            let relative = path
+                                .strip_prefix(conversations_dir.parent().unwrap_or(Path::new(".")))
+                                .unwrap_or(path);
+                            output.push_str(&format!(
+                                "- [\"{}\"]({}) ({})\n",
+                                entry.display,
+                                relative.display(),
+                                time
+                            ));
+                        }
+                        None => {
+                            output.push_str(&format!(
+                                "- \"{}\" ({})\n",
+                                entry.display, time
+                            ));
+                        }
                     }
                 }
             }
@@ -198,8 +312,6 @@ pub async fn format_with_summary(
             output.push('\n');
         }
     }
-
-    Ok(output.trim_end().to_string())
 }
 
 fn format_pr(pr: &PullRequest) -> String {
