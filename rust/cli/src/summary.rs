@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
+use crate::conversation::ConversationEntry;
 use crate::git::Commit;
 use crate::pr::PullRequest;
 
@@ -53,9 +54,14 @@ impl Summarizer {
         std::env::var("ANTHROPIC_API_KEY").is_ok()
     }
 
-    /// Generate a narrative summary from commit messages and PR descriptions
-    pub async fn summarize(&self, commits: &[Commit], prs: &[PullRequest]) -> Result<String> {
-        if commits.is_empty() && prs.is_empty() {
+    /// Generate a narrative summary from commit messages, PR descriptions, and conversation context
+    pub async fn summarize(
+        &self,
+        commits: &[Commit],
+        prs: &[PullRequest],
+        conversations: &[&ConversationEntry],
+    ) -> Result<String> {
+        if commits.is_empty() && prs.is_empty() && conversations.is_empty() {
             return Ok(String::new());
         }
 
@@ -81,6 +87,12 @@ impl Summarizer {
             .collect::<Vec<_>>()
             .join("\n");
 
+        let conversation_list: String = conversations
+            .iter()
+            .map(|e| format!("- {}", e.display))
+            .collect::<Vec<_>>()
+            .join("\n");
+
         let mut context = String::new();
         if !commits.is_empty() {
             context.push_str("Commits:\n");
@@ -93,18 +105,25 @@ impl Summarizer {
             context.push_str("Pull Requests:\n");
             context.push_str(&pr_list);
         }
+        if !conversations.is_empty() {
+            if !context.is_empty() {
+                context.push_str("\n\n");
+            }
+            context.push_str("Conversation topics (developer's questions and intent during this work):\n");
+            context.push_str(&conversation_list);
+        }
 
         let prompt = format!(
             r#"Summarize this git activity in 1-2 sentences, focusing on what was accomplished and the value delivered. Be concise and use past tense. Write in first person (e.g., "I implemented...", "I fixed...").
 
 {context}
 
-Write a summary suitable for daily standup notes and timesheet entries to report work to clients. Focus on the "what" and "why" rather than technical implementation details. Do not use bullet points, just a short paragraph in first person."#
+Write a summary suitable for daily standup notes and timesheet entries to report work to clients. Focus on the "what" and "why" rather than technical implementation details. Use conversation topics to understand intent behind the commits. Do not use bullet points, just a short paragraph in first person."#
         );
 
         let request = AnthropicRequest {
             model: self.model.clone(),
-            max_tokens: 150,
+            max_tokens: 200,
             messages: vec![Message {
                 role: "user".to_string(),
                 content: prompt,
