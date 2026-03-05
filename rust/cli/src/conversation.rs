@@ -84,7 +84,7 @@ pub fn read_history(since: &DateTime<Utc>, until: &DateTime<Utc>) -> Result<Vec<
         };
 
         let dt = DateTime::from_timestamp_millis(timestamp)
-            .unwrap_or_else(|| *since);
+            .unwrap_or(*since);
 
         entries.push(ConversationEntry {
             display,
@@ -114,7 +114,7 @@ pub fn match_to_repos<'a>(
 
                 if entry_str.starts_with(repo_str.as_ref()) {
                     let len = repo_str.len();
-                    if best_match.map_or(true, |(_, best_len)| len > best_len) {
+                    if best_match.is_none_or(|(_, best_len)| len > best_len) {
                         best_match = Some((forge, len));
                     }
                 }
@@ -285,7 +285,7 @@ pub fn convert_all_sessions(
         result
             .entry(key)
             .or_default()
-            .push((entry.clone(), md_path));
+            .push(((*entry).clone(), md_path));
     }
 
     result
