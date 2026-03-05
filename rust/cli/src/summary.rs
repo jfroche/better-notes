@@ -123,7 +123,7 @@ Write a summary suitable for daily standup notes and timesheet entries to report
 
         let request = AnthropicRequest {
             model: self.model.clone(),
-            max_tokens: 200,
+            max_tokens: 300,
             messages: vec![Message {
                 role: "user".to_string(),
                 content: prompt,
