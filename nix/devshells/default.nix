@@ -3,6 +3,9 @@
   flake,
   system,
 }:
+let
+  cclog = pkgs.callPackage ../../nix/packages/cclog.nix { };
+in
 pkgs.mkShell {
   packages = [
     flake.formatter.${system}
@@ -14,6 +17,9 @@ pkgs.mkShell {
     pkgs.gh
     pkgs.tea
     pkgs.glab
+
+    # Claude Code session conversion
+    cclog
   ];
 
   env = { };
