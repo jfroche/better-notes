@@ -14,23 +14,25 @@ All modules currently support the `standup` subcommand.
 
 | Module | File | Responsibility |
 |--------|------|----------------|
+| `conversation` | `conversation.rs` | Parse Claude Code history, match to repos, convert sessions to markdown via cclog |
 | `forge` | `forge.rs` | Detect hosting platform from remote URLs, generate commit/PR/API URLs |
 | `git` | `git.rs` | Discover repositories, extract and parse commits, deduplicate and group by forge |
-| `output` | `output.rs` | Format commits and PRs as grouped markdown, apply time-based grouping |
+| `output` | `output.rs` | Format commits, PRs, and conversations as grouped markdown, apply time-based grouping |
 | `pr` | `pr.rs` | Fetch PR/MR metadata from GitHub, GitLab, and Gitea APIs, resolve auth tokens |
-| `summary` | `summary.rs` | Generate narrative summaries via the Anthropic Claude API |
+| `summary` | `summary.rs` | Generate narrative summaries via the Anthropic Claude API, incorporating conversation context |
 
 ## Data flow
 
 The `standup` subcommand follows this pipeline:
 
-1. *CLI args* are parsed into a target date, day count, late-night offset, project root, and summary preference.
+1. *CLI args* are parsed into a target date, day count, late-night offset, project root, summary preference, and conversation options.
 2. *Repository discovery* (`git::discover_repositories`) recursively walks the project root, identifies `.git` directories, extracts remote URLs, and detects forges.
 3. *Commit extraction* (`git::get_commits`) runs `git log` in each repository, filtering by author identity and date range with full timestamps. Commits without descriptions (jj snapshots) are excluded.
 4. *Deduplication and grouping* (`git::deduplicate_and_group`) removes duplicate commits across worktrees and groups results by forge identity or repository path.
 5. *PR enrichment* (`pr::get_pull_requests`) queries each forge's API for the current user's PRs, fetches associated commit hashes, CI status, and merge conflict state. PRs are then filtered to the same date range as commits.
-6. *Formatting* (`output::format_with_summary` or `output::format_without_summary`) organizes items by time period, omits commits already covered by PRs, and renders structured markdown.
-7. *Summarization* (`summary::Summarizer::summarize`), if enabled, sends commit messages and PR descriptions to the Claude API and prepends the returned narrative to each repository section.
+6. *Conversation extraction* (`conversation::read_history`) parses `~/.claude/history.jsonl`, filters by date range, matches entries to discovered repos by longest path prefix, deduplicates sessions, and converts unique sessions to markdown via `cclog`.
+7. *Formatting* (`output::format_with_summary` or `output::format_without_summary`) organizes commits, PRs, and conversation entries by time period, omits commits already covered by PRs, and renders structured markdown with links to generated conversation files.
+8. *Summarization* (`summary::Summarizer::summarize`), if enabled, sends commit messages, PR descriptions, and conversation topics to the Claude API and prepends the returned narrative to each repository section.
 
 ## Key types
 
@@ -40,6 +42,7 @@ The core domain types bridge the pipeline stages:
 - `Repository` (struct): a filesystem path paired with an optional `Forge`. Produced by discovery, consumed by commit extraction.
 - `Commit` (struct): hash, short hash, subject, optional body, author, and UTC datetime. Extracted from `git log` output, consumed by deduplication, formatting, and summarization.
 - `PullRequest` (struct): number, title, optional description, status, CI status, conflict state, URL, associated commit hashes, and optional `updated_at` timestamp. Fetched from forge APIs, matched to commits by hash, filtered by date range.
+- `ConversationEntry` (struct): display text (the user's prompt), UTC timestamp, project path, and session ID. Parsed from `~/.claude/history.jsonl`, matched to repos, and rendered alongside commits and PRs.
 - `PrStatus` (enum): Open, Merged, or Closed.
 - `CiStatus` (enum): Pending, Success, Failure, or Unknown.
 
@@ -59,7 +62,7 @@ The Anthropic API key is read from the `ANTHROPIC_API_KEY` environment variable;
 The project builds with a Nix flake using [crane](https://crane-lang.org/) for Rust compilation.
 The flake provides:
 
-- A default package (`better-notes`) that wraps the binary with git, gh, tea, and glab on `PATH` via `wrapProgram`.
+- A default package (`better-notes`) that wraps the binary with git, gh, tea, glab, and cclog on `PATH` via `wrapProgram`.
 - A development shell with the Rust toolchain (1.85.0 from rust-overlay), cargo-nextest, and cargo-watch.
 - Passthrough tests: clippy, cargo doc, cargo deny, and cargo nextest.
 - Formatting via treefmt-nix.
@@ -74,4 +77,4 @@ Adding a new subcommand involves three steps:
 2. Add a module under `rust/cli/src/` implementing the subcommand's logic, and re-export it from `lib.rs`.
 3. Add a match arm in the `main` function to dispatch to the new handler.
 
-Existing modules (`forge`, `git`, `pr`, `summary`, `output`) can be reused if the new subcommand shares infrastructure such as repository discovery, forge detection, or LLM summarization.
+Existing modules (`conversation`, `forge`, `git`, `pr`, `summary`, `output`) can be reused if the new subcommand shares infrastructure such as repository discovery, forge detection, conversation extraction, or LLM summarization.
