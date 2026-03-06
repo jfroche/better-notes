@@ -4,6 +4,7 @@
   ...
 }:
 let
+  cclog = pkgs.callPackage ./cclog.nix { };
   craneLib = flake.lib.mkCraneLib { inherit pkgs; };
   src = pkgs.lib.cleanSourceWith {
     src = flake;
@@ -49,6 +50,7 @@ craneLib.buildPackage (
             pkgs.gh
             pkgs.tea
             pkgs.glab
+            cclog
           ]
         }
     '';
