@@ -6,8 +6,8 @@ title: better-notes
 
 better-notes is a toolkit for enhancing daily notes.
 Each subcommand addresses a different aspect of assembling and improving a coherent record of daily work.
-The first subcommand, `standup`, generates daily standup reports from git activity across multiple repositories and forges (GitHub, GitLab, Gitea), with optional PR metadata enrichment and LLM summarization.
-It is inspired by [git-standup](https://github.com/kamranahmedse/git-standup), extending it with multi-forge support, late-night work attribution, and narrative summaries.
+The first subcommand, `standup`, generates daily standup reports from git activity across multiple repositories and forges (GitHub, GitLab, Gitea), with optional PR metadata enrichment, Claude Code conversation context, and LLM summarization.
+It is inspired by [git-standup](https://github.com/kamranahmedse/git-standup), extending it with multi-forge support, late-night work attribution, conversation context from Claude Code sessions, and narrative summaries.
 
 ## Installation
 
@@ -56,7 +56,22 @@ Options:
 - `--late-night-offset <HOURS>` — hour boundary (0–6) for day rollover. Commits before this hour count as the previous day (default: 2).
 - `-p, --projects-dir <PATH>` — root directory to scan for git repositories (default: `~/projects`).
 - `--no-summary` — skip LLM summarization and output raw commit lists.
+- `--no-conversation` — skip extraction of Claude Code conversation context.
+- `--conversations-dir <PATH>` — directory for generated conversation markdown files (default: `./conversations`).
 - `--debug` — enable debug logging.
+
+## Conversation context
+
+When running `standup`, better-notes reads Claude Code session history from `~/.claude/history.jsonl` and matches entries to discovered repositories by project path.
+Conversations are interleaved chronologically with commits and PRs in the output, providing the *why* alongside the *what* — questions asked, decisions explored, and intent that doesn't appear in commit messages.
+
+For each unique session, [cclog](https://github.com/annenpolka/cclog) converts the full session transcript to readable markdown.
+The generated files are placed in the conversations directory (default `./conversations/`) and linked from the standup output.
+Multiple prompts from the same session link to the same markdown file.
+
+If `cclog` is not available on PATH, conversation entries still appear in the timeline but without links to generated markdown.
+If `~/.claude/history.jsonl` does not exist, the feature is silently skipped.
+Use `--no-conversation` to disable conversation extraction entirely.
 
 ## Jujutsu compatibility
 
